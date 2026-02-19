@@ -1,6 +1,7 @@
 #include "op.hpp"
 
 #include "../../utils.hpp"
+#include "../nvidia/op_nvidia.hpp"
 
 #include <cstring>
 
@@ -24,40 +25,48 @@ void embedding(tensor_t out, tensor_t index, tensor_t weight) {
     CHECK_ARGUMENT(out->shape()[0] == index->shape()[0], "Embedding: out rows must equal index length.");
     CHECK_ARGUMENT(out->shape()[1] == weight->shape()[1], "Embedding: out columns must equal weight embedding size.");
     ASSERT(out->isContiguous() && index->isContiguous() && weight->isContiguous(), "Embedding: all tensors must be contiguous.");
-    ASSERT(weight->deviceType() == LLAISYS_DEVICE_CPU, "Embedding: only CPU is supported now.");
 
-    const int64_t *idx_ptr = reinterpret_cast<const int64_t *>(index->data());
-    const size_t nindex = index->shape()[0];
-    const size_t nrow = weight->shape()[0];
-    const size_t nembed = weight->shape()[1];
-    for (size_t i = 0; i < nindex; ++i) {
-        CHECK_ARGUMENT(idx_ptr[i] >= 0 && static_cast<size_t>(idx_ptr[i]) < nrow, "Embedding: index out of range.");
+    if (weight->deviceType() == LLAISYS_DEVICE_CPU) {
+        const int64_t *idx_ptr = reinterpret_cast<const int64_t *>(index->data());
+        const size_t nindex = index->shape()[0];
+        const size_t nrow = weight->shape()[0];
+        const size_t nembed = weight->shape()[1];
+        for (size_t i = 0; i < nindex; ++i) {
+            CHECK_ARGUMENT(idx_ptr[i] >= 0 && static_cast<size_t>(idx_ptr[i]) < nrow, "Embedding: index out of range.");
+        }
+
+        switch (out->dtype()) {
+        case LLAISYS_DTYPE_F32:
+            return embedding_impl(
+                reinterpret_cast<float *>(out->data()),
+                idx_ptr,
+                reinterpret_cast<const float *>(weight->data()),
+                nindex,
+                nembed);
+        case LLAISYS_DTYPE_F16:
+            return embedding_impl(
+                reinterpret_cast<fp16_t *>(out->data()),
+                idx_ptr,
+                reinterpret_cast<const fp16_t *>(weight->data()),
+                nindex,
+                nembed);
+        case LLAISYS_DTYPE_BF16:
+            return embedding_impl(
+                reinterpret_cast<bf16_t *>(out->data()),
+                idx_ptr,
+                reinterpret_cast<const bf16_t *>(weight->data()),
+                nindex,
+                nembed);
+        default:
+            EXCEPTION_UNSUPPORTED_DATATYPE(out->dtype());
+        }
     }
 
-    switch (out->dtype()) {
-    case LLAISYS_DTYPE_F32:
-        return embedding_impl(
-            reinterpret_cast<float *>(out->data()),
-            idx_ptr,
-            reinterpret_cast<const float *>(weight->data()),
-            nindex,
-            nembed);
-    case LLAISYS_DTYPE_F16:
-        return embedding_impl(
-            reinterpret_cast<fp16_t *>(out->data()),
-            idx_ptr,
-            reinterpret_cast<const fp16_t *>(weight->data()),
-            nindex,
-            nembed);
-    case LLAISYS_DTYPE_BF16:
-        return embedding_impl(
-            reinterpret_cast<bf16_t *>(out->data()),
-            idx_ptr,
-            reinterpret_cast<const bf16_t *>(weight->data()),
-            nindex,
-            nembed);
-    default:
-        EXCEPTION_UNSUPPORTED_DATATYPE(out->dtype());
+#ifdef ENABLE_NVIDIA_API
+    if (weight->deviceType() == LLAISYS_DEVICE_NVIDIA) {
+        return nvidia::embedding(out, index, weight);
     }
+#endif
+    EXCEPTION_UNSUPPORTED_DEVICE;
 }
 } // namespace llaisys::ops

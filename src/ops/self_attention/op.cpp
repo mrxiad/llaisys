@@ -1,6 +1,7 @@
 #include "op.hpp"
 
 #include "../../utils.hpp"
+#include "../nvidia/op_nvidia.hpp"
 
 #include <cmath>
 #include <limits>
@@ -102,50 +103,58 @@ void self_attention(tensor_t attn_val, tensor_t q, tensor_t k, tensor_t v, float
     CHECK_ARGUMENT(kd == d, "SelfAttention: q and k head_dim mismatch.");
     CHECK_ARGUMENT(nh % nkvh == 0, "SelfAttention: nhead must be divisible by nkvhead.");
     CHECK_ARGUMENT(kvlen >= qlen, "SelfAttention: kvlen must be >= qlen for causal mask.");
-    ASSERT(attn_val->deviceType() == LLAISYS_DEVICE_CPU, "SelfAttention: only CPU is supported now.");
 
-    switch (attn_val->dtype()) {
-    case LLAISYS_DTYPE_F32:
-        return self_attention_impl(
-            reinterpret_cast<float *>(attn_val->data()),
-            reinterpret_cast<const float *>(q->data()),
-            reinterpret_cast<const float *>(k->data()),
-            reinterpret_cast<const float *>(v->data()),
-            qlen,
-            kvlen,
-            nh,
-            nkvh,
-            d,
-            dv,
-            scale);
-    case LLAISYS_DTYPE_F16:
-        return self_attention_impl(
-            reinterpret_cast<fp16_t *>(attn_val->data()),
-            reinterpret_cast<const fp16_t *>(q->data()),
-            reinterpret_cast<const fp16_t *>(k->data()),
-            reinterpret_cast<const fp16_t *>(v->data()),
-            qlen,
-            kvlen,
-            nh,
-            nkvh,
-            d,
-            dv,
-            scale);
-    case LLAISYS_DTYPE_BF16:
-        return self_attention_impl(
-            reinterpret_cast<bf16_t *>(attn_val->data()),
-            reinterpret_cast<const bf16_t *>(q->data()),
-            reinterpret_cast<const bf16_t *>(k->data()),
-            reinterpret_cast<const bf16_t *>(v->data()),
-            qlen,
-            kvlen,
-            nh,
-            nkvh,
-            d,
-            dv,
-            scale);
-    default:
-        EXCEPTION_UNSUPPORTED_DATATYPE(attn_val->dtype());
+    if (attn_val->deviceType() == LLAISYS_DEVICE_CPU) {
+        switch (attn_val->dtype()) {
+        case LLAISYS_DTYPE_F32:
+            return self_attention_impl(
+                reinterpret_cast<float *>(attn_val->data()),
+                reinterpret_cast<const float *>(q->data()),
+                reinterpret_cast<const float *>(k->data()),
+                reinterpret_cast<const float *>(v->data()),
+                qlen,
+                kvlen,
+                nh,
+                nkvh,
+                d,
+                dv,
+                scale);
+        case LLAISYS_DTYPE_F16:
+            return self_attention_impl(
+                reinterpret_cast<fp16_t *>(attn_val->data()),
+                reinterpret_cast<const fp16_t *>(q->data()),
+                reinterpret_cast<const fp16_t *>(k->data()),
+                reinterpret_cast<const fp16_t *>(v->data()),
+                qlen,
+                kvlen,
+                nh,
+                nkvh,
+                d,
+                dv,
+                scale);
+        case LLAISYS_DTYPE_BF16:
+            return self_attention_impl(
+                reinterpret_cast<bf16_t *>(attn_val->data()),
+                reinterpret_cast<const bf16_t *>(q->data()),
+                reinterpret_cast<const bf16_t *>(k->data()),
+                reinterpret_cast<const bf16_t *>(v->data()),
+                qlen,
+                kvlen,
+                nh,
+                nkvh,
+                d,
+                dv,
+                scale);
+        default:
+            EXCEPTION_UNSUPPORTED_DATATYPE(attn_val->dtype());
+        }
     }
+
+#ifdef ENABLE_NVIDIA_API
+    if (attn_val->deviceType() == LLAISYS_DEVICE_NVIDIA) {
+        return nvidia::self_attention(attn_val, q, k, v, scale);
+    }
+#endif
+    EXCEPTION_UNSUPPORTED_DEVICE;
 }
 } // namespace llaisys::ops

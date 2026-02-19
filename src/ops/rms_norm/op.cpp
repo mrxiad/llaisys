@@ -1,6 +1,7 @@
 #include "op.hpp"
 
 #include "../../utils.hpp"
+#include "../nvidia/op_nvidia.hpp"
 
 #include <cmath>
 
@@ -38,37 +39,45 @@ void rms_norm(tensor_t out, tensor_t in, tensor_t weight, float eps) {
     CHECK_ARGUMENT(out->shape() == in->shape(), "RMSNorm: out shape must equal in shape.");
     CHECK_ARGUMENT(weight->shape()[0] == in->shape()[1], "RMSNorm: weight shape mismatch.");
     ASSERT(out->isContiguous() && in->isContiguous() && weight->isContiguous(), "RMSNorm: all tensors must be contiguous.");
-    ASSERT(out->deviceType() == LLAISYS_DEVICE_CPU, "RMSNorm: only CPU is supported now.");
 
-    const size_t nrow = in->shape()[0];
-    const size_t ncol = in->shape()[1];
-    switch (out->dtype()) {
-    case LLAISYS_DTYPE_F32:
-        return rms_norm_impl(
-            reinterpret_cast<float *>(out->data()),
-            reinterpret_cast<const float *>(in->data()),
-            reinterpret_cast<const float *>(weight->data()),
-            nrow,
-            ncol,
-            eps);
-    case LLAISYS_DTYPE_F16:
-        return rms_norm_impl(
-            reinterpret_cast<fp16_t *>(out->data()),
-            reinterpret_cast<const fp16_t *>(in->data()),
-            reinterpret_cast<const fp16_t *>(weight->data()),
-            nrow,
-            ncol,
-            eps);
-    case LLAISYS_DTYPE_BF16:
-        return rms_norm_impl(
-            reinterpret_cast<bf16_t *>(out->data()),
-            reinterpret_cast<const bf16_t *>(in->data()),
-            reinterpret_cast<const bf16_t *>(weight->data()),
-            nrow,
-            ncol,
-            eps);
-    default:
-        EXCEPTION_UNSUPPORTED_DATATYPE(out->dtype());
+    if (out->deviceType() == LLAISYS_DEVICE_CPU) {
+        const size_t nrow = in->shape()[0];
+        const size_t ncol = in->shape()[1];
+        switch (out->dtype()) {
+        case LLAISYS_DTYPE_F32:
+            return rms_norm_impl(
+                reinterpret_cast<float *>(out->data()),
+                reinterpret_cast<const float *>(in->data()),
+                reinterpret_cast<const float *>(weight->data()),
+                nrow,
+                ncol,
+                eps);
+        case LLAISYS_DTYPE_F16:
+            return rms_norm_impl(
+                reinterpret_cast<fp16_t *>(out->data()),
+                reinterpret_cast<const fp16_t *>(in->data()),
+                reinterpret_cast<const fp16_t *>(weight->data()),
+                nrow,
+                ncol,
+                eps);
+        case LLAISYS_DTYPE_BF16:
+            return rms_norm_impl(
+                reinterpret_cast<bf16_t *>(out->data()),
+                reinterpret_cast<const bf16_t *>(in->data()),
+                reinterpret_cast<const bf16_t *>(weight->data()),
+                nrow,
+                ncol,
+                eps);
+        default:
+            EXCEPTION_UNSUPPORTED_DATATYPE(out->dtype());
+        }
     }
+
+#ifdef ENABLE_NVIDIA_API
+    if (out->deviceType() == LLAISYS_DEVICE_NVIDIA) {
+        return nvidia::rms_norm(out, in, weight, eps);
+    }
+#endif
+    EXCEPTION_UNSUPPORTED_DEVICE;
 }
 } // namespace llaisys::ops

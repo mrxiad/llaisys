@@ -1,6 +1,7 @@
 #include "op.hpp"
 
 #include "../../utils.hpp"
+#include "../nvidia/op_nvidia.hpp"
 
 #include <cmath>
 
@@ -26,29 +27,37 @@ void swiglu(tensor_t out, tensor_t gate, tensor_t up) {
     CHECK_SAME_DTYPE(out->dtype(), gate->dtype(), up->dtype());
     CHECK_SAME_SHAPE(out->shape(), gate->shape(), up->shape());
     ASSERT(out->isContiguous() && gate->isContiguous() && up->isContiguous(), "SwiGLU: all tensors must be contiguous.");
-    ASSERT(out->deviceType() == LLAISYS_DEVICE_CPU, "SwiGLU: only CPU is supported now.");
 
-    switch (out->dtype()) {
-    case LLAISYS_DTYPE_F32:
-        return swiglu_impl(
-            reinterpret_cast<float *>(out->data()),
-            reinterpret_cast<const float *>(gate->data()),
-            reinterpret_cast<const float *>(up->data()),
-            out->numel());
-    case LLAISYS_DTYPE_F16:
-        return swiglu_impl(
-            reinterpret_cast<fp16_t *>(out->data()),
-            reinterpret_cast<const fp16_t *>(gate->data()),
-            reinterpret_cast<const fp16_t *>(up->data()),
-            out->numel());
-    case LLAISYS_DTYPE_BF16:
-        return swiglu_impl(
-            reinterpret_cast<bf16_t *>(out->data()),
-            reinterpret_cast<const bf16_t *>(gate->data()),
-            reinterpret_cast<const bf16_t *>(up->data()),
-            out->numel());
-    default:
-        EXCEPTION_UNSUPPORTED_DATATYPE(out->dtype());
+    if (out->deviceType() == LLAISYS_DEVICE_CPU) {
+        switch (out->dtype()) {
+        case LLAISYS_DTYPE_F32:
+            return swiglu_impl(
+                reinterpret_cast<float *>(out->data()),
+                reinterpret_cast<const float *>(gate->data()),
+                reinterpret_cast<const float *>(up->data()),
+                out->numel());
+        case LLAISYS_DTYPE_F16:
+            return swiglu_impl(
+                reinterpret_cast<fp16_t *>(out->data()),
+                reinterpret_cast<const fp16_t *>(gate->data()),
+                reinterpret_cast<const fp16_t *>(up->data()),
+                out->numel());
+        case LLAISYS_DTYPE_BF16:
+            return swiglu_impl(
+                reinterpret_cast<bf16_t *>(out->data()),
+                reinterpret_cast<const bf16_t *>(gate->data()),
+                reinterpret_cast<const bf16_t *>(up->data()),
+                out->numel());
+        default:
+            EXCEPTION_UNSUPPORTED_DATATYPE(out->dtype());
+        }
     }
+
+#ifdef ENABLE_NVIDIA_API
+    if (out->deviceType() == LLAISYS_DEVICE_NVIDIA) {
+        return nvidia::swiglu(out, gate, up);
+    }
+#endif
+    EXCEPTION_UNSUPPORTED_DEVICE;
 }
 } // namespace llaisys::ops

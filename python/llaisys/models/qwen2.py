@@ -42,7 +42,7 @@ class Qwen2:
         if not config_path.is_file():
             raise FileNotFoundError(f"Missing config file: {config_path}")
 
-        # Assignment-3 CPU path: ops and model backend currently run on CPU only.
+        # Assignment-3 CPU path: model backend currently runs on CPU only.
         if device != DeviceType.CPU:
             raise NotImplementedError("Qwen2 backend currently supports CPU only")
 

@@ -5,8 +5,12 @@ from .libllaisys import MemcpyKind
 from .libllaisys import llaisysStream_t as Stream
 from .tensor import Tensor
 from .ops import Ops
-from . import models
-from .models import *
+
+try:
+    from . import models
+    from .models import *  # noqa: F401,F403
+except ModuleNotFoundError:
+    models = None
 
 __all__ = [
     "RuntimeAPI",
