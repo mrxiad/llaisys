@@ -64,5 +64,15 @@ __C {
         struct LlaisysQwen2Model *model,
         int64_t *token_ids,
         size_t ntoken);
+
+    // Infer next token id with sampling controls.
+    // top_k <= 0 means disabling top-k filtering.
+    __export int64_t llaisysQwen2ModelInferEx(
+        struct LlaisysQwen2Model *model,
+        int64_t *token_ids,
+        size_t ntoken,
+        int top_k,
+        float top_p,
+        float temperature);
 }
 #endif // LLAISYS_MODELS_QWEN2_H

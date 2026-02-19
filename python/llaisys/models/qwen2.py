@@ -1,7 +1,7 @@
 import ctypes
 import json
 from pathlib import Path
-from typing import Sequence
+from typing import Iterator, Sequence
 
 import safetensors
 import torch
@@ -116,6 +116,51 @@ class Qwen2:
             LIB_LLAISYS.llaisysQwen2ModelDestroy(self._model)
             self._model = None
 
+    def _normalize_sampling_args(self, top_k: int, top_p: float, temperature: float) -> tuple[int, float, float]:
+        top_k = int(top_k)
+        top_p = float(top_p)
+        temperature = float(temperature)
+        if top_p <= 0.0 or top_p > 1.0:
+            raise ValueError("top_p must be in (0, 1].")
+        if temperature <= 0.0:
+            raise ValueError("temperature must be > 0.")
+        return top_k, top_p, temperature
+
+    def _stream_generate_impl(
+        self,
+        inputs: Sequence[int],
+        max_new_tokens: int | None,
+        top_k: int,
+        top_p: float,
+        temperature: float,
+    ) -> Iterator[tuple[int, list[int]]]:
+        tokens = [int(t) for t in inputs]
+        if max_new_tokens is None:
+            max_new_tokens = 128
+
+        top_k, top_p, temperature = self._normalize_sampling_args(top_k, top_p, temperature)
+
+        LIB_LLAISYS.llaisysQwen2ModelReset(self._model)
+        for _ in range(int(max_new_tokens)):
+            if len(tokens) >= int(self._meta.maxseq) or len(tokens) == 0:
+                break
+
+            token_ids = (ctypes.c_int64 * len(tokens))(*tokens)
+            next_token = int(
+                LIB_LLAISYS.llaisysQwen2ModelInferEx(
+                    self._model,
+                    token_ids,
+                    ctypes.c_size_t(len(tokens)),
+                    ctypes.c_int(top_k),
+                    ctypes.c_float(top_p),
+                    ctypes.c_float(temperature),
+                )
+            )
+            tokens.append(next_token)
+            yield next_token, tokens.copy()
+            if next_token == self._end_token:
+                break
+
     def generate(
         self,
         inputs: Sequence[int],
@@ -124,29 +169,18 @@ class Qwen2:
         top_p: float = 0.8,
         temperature: float = 0.8,
     ):
-        # Assignment #3 checks greedy decoding (top_k=1, top_p=1, temperature=1).
-        # Parameters are kept for API compatibility, but backend currently uses argmax.
-        _ = (top_k, top_p, temperature)
-
         tokens = [int(t) for t in inputs]
-        if max_new_tokens is None:
-            max_new_tokens = 128
-
-        LIB_LLAISYS.llaisysQwen2ModelReset(self._model)
-        for _ in range(int(max_new_tokens)):
-            if len(tokens) >= int(self._meta.maxseq):
-                break
-            if len(tokens) == 0:
-                break
-
-            token_ids = (ctypes.c_int64 * len(tokens))(*tokens)
-            next_token = int(
-                LIB_LLAISYS.llaisysQwen2ModelInfer(
-                    self._model, token_ids, ctypes.c_size_t(len(tokens))
-                )
-            )
-            tokens.append(next_token)
-            if next_token == self._end_token:
-                break
-
+        for _, out_tokens in self._stream_generate_impl(inputs, max_new_tokens, top_k, top_p, temperature):
+            tokens = out_tokens
         return tokens
+
+    def stream_generate(
+        self,
+        inputs: Sequence[int],
+        max_new_tokens: int = None,
+        top_k: int = 50,
+        top_p: float = 0.8,
+        temperature: float = 0.8,
+    ) -> Iterator[int]:
+        for next_token, _ in self._stream_generate_impl(inputs, max_new_tokens, top_k, top_p, temperature):
+            yield next_token

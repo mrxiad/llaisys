@@ -7,6 +7,7 @@
 #include "../ops/rearrange/op.hpp"
 #include "../ops/rms_norm/op.hpp"
 #include "../ops/rope/op.hpp"
+#include "../ops/sample/op.hpp"
 #include "../ops/self_attention/op.hpp"
 #include "../ops/swiglu/op.hpp"
 #include "../tensor/tensor.hpp"
@@ -332,7 +333,14 @@ bool set_named_weight(
     return false;
 }
 
-int64_t forward_one_token(LlaisysQwen2Model *model, int64_t token_id, size_t pos) {
+int64_t forward_one_token(
+    LlaisysQwen2Model *model,
+    int64_t token_id,
+    size_t pos,
+    bool need_next_token,
+    int top_k,
+    float top_p,
+    float temperature) {
     const size_t hs = model->meta.hs;
     const size_t nh = model->meta.nh;
     const size_t nkvh = model->meta.nkvh;
@@ -417,12 +425,86 @@ int64_t forward_one_token(LlaisysQwen2Model *model, int64_t token_id, size_t pos
     tensor_t logits_2d = create_model_tensor(model, {1, voc}, model->meta.dtype);
     llaisys::ops::linear(logits_2d, out_norm, model->w.out_embed, nullptr);
 
-    tensor_t logits_1d = logits_2d->view({voc});
-    tensor_t max_idx = create_model_tensor(model, {1}, LLAISYS_DTYPE_I64);
-    tensor_t max_val = create_model_tensor(model, {1}, model->meta.dtype);
-    llaisys::ops::argmax(max_idx, max_val, logits_1d);
+    if (!need_next_token) {
+        return -1;
+    }
 
-    return reinterpret_cast<const int64_t *>(max_idx->data())[0];
+    tensor_t logits_1d = logits_2d->view({voc});
+    tensor_t next_idx = create_model_tensor(model, {1}, LLAISYS_DTYPE_I64);
+
+    const bool greedy = (top_k == 1 && top_p >= 1.0f && std::abs(temperature - 1.0f) < 1e-6f);
+    if (greedy) {
+        tensor_t max_val = create_model_tensor(model, {1}, model->meta.dtype);
+        llaisys::ops::argmax(next_idx, max_val, logits_1d);
+    } else {
+        llaisys::ops::sample(next_idx, logits_1d, temperature, top_k, top_p);
+    }
+    return reinterpret_cast<const int64_t *>(next_idx->data())[0];
+}
+
+int64_t infer_impl(
+    LlaisysQwen2Model *model,
+    int64_t *token_ids,
+    size_t ntoken,
+    int top_k,
+    float top_p,
+    float temperature) {
+    CHECK_ARGUMENT(model != nullptr, "Qwen2: model must not be null.");
+    CHECK_ARGUMENT(token_ids != nullptr || ntoken == 0, "Qwen2: token_ids pointer is null.");
+    CHECK_ARGUMENT(temperature > 0.0f, "Qwen2: temperature must be > 0.");
+    CHECK_ARGUMENT(top_p > 0.0f && top_p <= 1.0f, "Qwen2: top_p must be in (0, 1].");
+    ensure_model_device_supported(model);
+    check_model_ready(model);
+
+    if (ntoken == 0) {
+        return model->meta.end_token;
+    }
+    CHECK_ARGUMENT(ntoken <= model->meta.maxseq, "Qwen2: ntoken exceeds maxseq.");
+
+    // Reuse KV cache only when the caller keeps a matching prefix.
+    bool prefix_match = model->cached_tokens <= ntoken;
+    if (prefix_match) {
+        for (size_t i = 0; i < model->cached_tokens; ++i) {
+            if (model->cached_token_ids[i] != token_ids[i]) {
+                prefix_match = false;
+                break;
+            }
+        }
+    }
+    if (!prefix_match) {
+        reset_generation_state(model);
+    }
+
+    const bool deterministic = (top_k == 1 && top_p >= 1.0f && std::abs(temperature - 1.0f) < 1e-6f);
+    if (deterministic && model->cached_tokens == ntoken && model->cached_next_token_valid && model->cached_next_for_ntoken == ntoken) {
+        return model->cached_next_token;
+    }
+
+    ensure_kv_capacity(model, ntoken);
+
+    // Process only uncached suffix tokens. Sample only on the final position.
+    for (size_t pos = model->cached_tokens; pos < ntoken; ++pos) {
+        const bool need_next_token = (pos + 1 == ntoken);
+        int64_t next_token = forward_one_token(model, token_ids[pos], pos, need_next_token, top_k, top_p, temperature);
+        if (need_next_token) {
+            model->cached_next_token = next_token;
+            model->cached_next_token_valid = deterministic;
+            model->cached_next_for_ntoken = ntoken;
+        }
+
+        model->cached_token_ids.push_back(token_ids[pos]);
+        model->cached_tokens = pos + 1;
+    }
+
+    // If no new prefix token is processed, we still need to produce a next token.
+    if (model->cached_tokens == ntoken && (!deterministic || !model->cached_next_token_valid || model->cached_next_for_ntoken != ntoken)) {
+        model->cached_next_token = forward_one_token(model, token_ids[ntoken - 1], ntoken - 1, true, top_k, top_p, temperature);
+        model->cached_next_token_valid = deterministic;
+        model->cached_next_for_ntoken = ntoken;
+    }
+
+    CHECK_ARGUMENT(model->cached_next_for_ntoken == ntoken, "Qwen2: failed to produce next token.");
+    return model->cached_next_token;
 }
 
 } // namespace
@@ -498,50 +580,16 @@ void llaisysQwen2ModelReset(struct LlaisysQwen2Model *model) {
 }
 
 int64_t llaisysQwen2ModelInfer(struct LlaisysQwen2Model *model, int64_t *token_ids, size_t ntoken) {
-    CHECK_ARGUMENT(model != nullptr, "Qwen2: model must not be null.");
-    CHECK_ARGUMENT(token_ids != nullptr || ntoken == 0, "Qwen2: token_ids pointer is null.");
-    ensure_model_device_supported(model);
-    check_model_ready(model);
+    return infer_impl(model, token_ids, ntoken, 1, 1.0f, 1.0f);
+}
 
-    if (ntoken == 0) {
-        return model->meta.end_token;
-    }
-    CHECK_ARGUMENT(ntoken <= model->meta.maxseq, "Qwen2: ntoken exceeds maxseq.");
-
-    // Reuse KV cache only when the caller keeps a matching prefix.
-    bool prefix_match = model->cached_tokens <= ntoken;
-    if (prefix_match) {
-        for (size_t i = 0; i < model->cached_tokens; ++i) {
-            if (model->cached_token_ids[i] != token_ids[i]) {
-                prefix_match = false;
-                break;
-            }
-        }
-    }
-    if (!prefix_match) {
-        reset_generation_state(model);
-    }
-
-    if (model->cached_tokens == ntoken && model->cached_next_token_valid && model->cached_next_for_ntoken == ntoken) {
-        return model->cached_next_token;
-    }
-
-    ensure_kv_capacity(model, ntoken);
-
-    // Process only uncached suffix tokens. This is the KV-cache speedup path.
-    for (size_t pos = model->cached_tokens; pos < ntoken; ++pos) {
-        int64_t next_token = forward_one_token(model, token_ids[pos], pos);
-        model->cached_next_token = next_token;
-        model->cached_next_token_valid = true;
-        model->cached_next_for_ntoken = pos + 1;
-
-        model->cached_token_ids.push_back(token_ids[pos]);
-        model->cached_tokens = pos + 1;
-    }
-
-    CHECK_ARGUMENT(
-        model->cached_next_token_valid && model->cached_next_for_ntoken == ntoken,
-        "Qwen2: failed to produce next token.");
-    return model->cached_next_token;
+int64_t llaisysQwen2ModelInferEx(
+    struct LlaisysQwen2Model *model,
+    int64_t *token_ids,
+    size_t ntoken,
+    int top_k,
+    float top_p,
+    float temperature) {
+    return infer_impl(model, token_ids, ntoken, top_k, top_p, temperature);
 }
 }
