@@ -74,5 +74,15 @@ __C {
         int top_k,
         float top_p,
         float temperature);
+
+    // Infer partial argmax on logits[vocab_start:vocab_end) for tensor-parallel reduce.
+    __export void llaisysQwen2ModelInferShardArgmax(
+        struct LlaisysQwen2Model *model,
+        int64_t *token_ids,
+        size_t ntoken,
+        size_t vocab_start,
+        size_t vocab_end,
+        int64_t *max_idx,
+        float *max_val);
 }
 #endif // LLAISYS_MODELS_QWEN2_H

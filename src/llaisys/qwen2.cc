@@ -80,6 +80,20 @@ bool is_supported_float_dtype(llaisysDataType_t dtype) {
     return dtype == LLAISYS_DTYPE_F32 || dtype == LLAISYS_DTYPE_F16 || dtype == LLAISYS_DTYPE_BF16;
 }
 
+float scalar_to_float(tensor_t t) {
+    CHECK_ARGUMENT(t != nullptr && t->numel() == 1, "Qwen2: scalar tensor expected.");
+    switch (t->dtype()) {
+    case LLAISYS_DTYPE_F32:
+        return reinterpret_cast<const float *>(t->data())[0];
+    case LLAISYS_DTYPE_F16:
+        return llaisys::utils::cast<float>(reinterpret_cast<const fp16_t *>(t->data())[0]);
+    case LLAISYS_DTYPE_BF16:
+        return llaisys::utils::cast<float>(reinterpret_cast<const bf16_t *>(t->data())[0]);
+    default:
+        EXCEPTION_UNSUPPORTED_DATATYPE(t->dtype());
+    }
+}
+
 void ensure_model_device_supported(const LlaisysQwen2Model *model) {
     CHECK_ARGUMENT(model->device == LLAISYS_DEVICE_CPU, "Qwen2: only CPU device is supported currently.");
 }
@@ -340,7 +354,12 @@ int64_t forward_one_token(
     bool need_next_token,
     int top_k,
     float top_p,
-    float temperature) {
+    float temperature,
+    bool need_shard_argmax,
+    size_t shard_start,
+    size_t shard_end,
+    int64_t *shard_idx_out,
+    float *shard_val_out) {
     const size_t hs = model->meta.hs;
     const size_t nh = model->meta.nh;
     const size_t nkvh = model->meta.nkvh;
@@ -425,6 +444,18 @@ int64_t forward_one_token(
     tensor_t logits_2d = create_model_tensor(model, {1, voc}, model->meta.dtype);
     llaisys::ops::linear(logits_2d, out_norm, model->w.out_embed, nullptr);
 
+    if (need_shard_argmax) {
+        CHECK_ARGUMENT(shard_idx_out != nullptr && shard_val_out != nullptr, "Qwen2: shard argmax outputs must not be null.");
+        CHECK_ARGUMENT(shard_start < shard_end && shard_end <= voc, "Qwen2: invalid shard range.");
+        tensor_t logits_1d_all = logits_2d->view({voc});
+        tensor_t logits_shard = logits_1d_all->slice(0, shard_start, shard_end);
+        tensor_t shard_idx = create_model_tensor(model, {1}, LLAISYS_DTYPE_I64);
+        tensor_t shard_val = create_model_tensor(model, {1}, model->meta.dtype);
+        llaisys::ops::argmax(shard_idx, shard_val, logits_shard);
+        *shard_idx_out = static_cast<int64_t>(shard_start) + reinterpret_cast<const int64_t *>(shard_idx->data())[0];
+        *shard_val_out = scalar_to_float(shard_val);
+    }
+
     if (!need_next_token) {
         return -1;
     }
@@ -485,7 +516,19 @@ int64_t infer_impl(
     // Process only uncached suffix tokens. Sample only on the final position.
     for (size_t pos = model->cached_tokens; pos < ntoken; ++pos) {
         const bool need_next_token = (pos + 1 == ntoken);
-        int64_t next_token = forward_one_token(model, token_ids[pos], pos, need_next_token, top_k, top_p, temperature);
+        int64_t next_token = forward_one_token(
+            model,
+            token_ids[pos],
+            pos,
+            need_next_token,
+            top_k,
+            top_p,
+            temperature,
+            false,
+            0,
+            0,
+            nullptr,
+            nullptr);
         if (need_next_token) {
             model->cached_next_token = next_token;
             model->cached_next_token_valid = deterministic;
@@ -498,7 +541,19 @@ int64_t infer_impl(
 
     // If no new prefix token is processed, we still need to produce a next token.
     if (model->cached_tokens == ntoken && (!deterministic || !model->cached_next_token_valid || model->cached_next_for_ntoken != ntoken)) {
-        model->cached_next_token = forward_one_token(model, token_ids[ntoken - 1], ntoken - 1, true, top_k, top_p, temperature);
+        model->cached_next_token = forward_one_token(
+            model,
+            token_ids[ntoken - 1],
+            ntoken - 1,
+            true,
+            top_k,
+            top_p,
+            temperature,
+            false,
+            0,
+            0,
+            nullptr,
+            nullptr);
         model->cached_next_token_valid = deterministic;
         model->cached_next_for_ntoken = ntoken;
     }
@@ -591,5 +646,92 @@ int64_t llaisysQwen2ModelInferEx(
     float top_p,
     float temperature) {
     return infer_impl(model, token_ids, ntoken, top_k, top_p, temperature);
+}
+
+void llaisysQwen2ModelInferShardArgmax(
+    struct LlaisysQwen2Model *model,
+    int64_t *token_ids,
+    size_t ntoken,
+    size_t vocab_start,
+    size_t vocab_end,
+    int64_t *max_idx,
+    float *max_val) {
+    CHECK_ARGUMENT(model != nullptr, "Qwen2: model must not be null.");
+    CHECK_ARGUMENT(token_ids != nullptr || ntoken == 0, "Qwen2: token_ids pointer is null.");
+    CHECK_ARGUMENT(max_idx != nullptr && max_val != nullptr, "Qwen2: output pointers must not be null.");
+    ensure_model_device_supported(model);
+    check_model_ready(model);
+
+    if (ntoken == 0) {
+        *max_idx = model->meta.end_token;
+        *max_val = 0.0f;
+        return;
+    }
+    CHECK_ARGUMENT(ntoken <= model->meta.maxseq, "Qwen2: ntoken exceeds maxseq.");
+    CHECK_ARGUMENT(vocab_start < vocab_end && vocab_end <= model->meta.voc, "Qwen2: invalid shard vocab range.");
+
+    bool prefix_match = model->cached_tokens <= ntoken;
+    if (prefix_match) {
+        for (size_t i = 0; i < model->cached_tokens; ++i) {
+            if (model->cached_token_ids[i] != token_ids[i]) {
+                prefix_match = false;
+                break;
+            }
+        }
+    }
+    if (!prefix_match) {
+        reset_generation_state(model);
+    }
+
+    ensure_kv_capacity(model, ntoken);
+
+    bool computed_local = false;
+    for (size_t pos = model->cached_tokens; pos < ntoken; ++pos) {
+        const bool need_local = (pos + 1 == ntoken);
+        int64_t local_idx = -1;
+        float local_val = 0.0f;
+        (void)forward_one_token(
+            model,
+            token_ids[pos],
+            pos,
+            false,
+            1,
+            1.0f,
+            1.0f,
+            need_local,
+            vocab_start,
+            vocab_end,
+            &local_idx,
+            &local_val);
+        if (need_local) {
+            *max_idx = local_idx;
+            *max_val = local_val;
+            computed_local = true;
+        }
+        model->cached_token_ids.push_back(token_ids[pos]);
+        model->cached_tokens = pos + 1;
+    }
+
+    if (!computed_local) {
+        int64_t local_idx = -1;
+        float local_val = 0.0f;
+        (void)forward_one_token(
+            model,
+            token_ids[ntoken - 1],
+            ntoken - 1,
+            false,
+            1,
+            1.0f,
+            1.0f,
+            true,
+            vocab_start,
+            vocab_end,
+            &local_idx,
+            &local_val);
+        *max_idx = local_idx;
+        *max_val = local_val;
+    }
+
+    model->cached_next_token_valid = false;
 }
 }

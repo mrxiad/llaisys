@@ -76,3 +76,14 @@ def load_qwen2(lib):
         c_float,
     ]
     lib.llaisysQwen2ModelInferEx.restype = c_int64
+
+    lib.llaisysQwen2ModelInferShardArgmax.argtypes = [
+        llaisysQwen2Model_t,
+        POINTER(c_int64),
+        c_size_t,
+        c_size_t,
+        c_size_t,
+        POINTER(c_int64),
+        POINTER(c_float),
+    ]
+    lib.llaisysQwen2ModelInferShardArgmax.restype = None

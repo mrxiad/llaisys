@@ -184,3 +184,21 @@ class Qwen2:
     ) -> Iterator[int]:
         for next_token, _ in self._stream_generate_impl(inputs, max_new_tokens, top_k, top_p, temperature):
             yield next_token
+
+    def infer_shard_argmax(self, inputs: Sequence[int], vocab_start: int, vocab_end: int) -> tuple[int, float]:
+        tokens = [int(t) for t in inputs]
+        if len(tokens) == 0:
+            return self._end_token, 0.0
+        out_idx = ctypes.c_int64(-1)
+        out_val = ctypes.c_float(0.0)
+        token_ids = (ctypes.c_int64 * len(tokens))(*tokens)
+        LIB_LLAISYS.llaisysQwen2ModelInferShardArgmax(
+            self._model,
+            token_ids,
+            ctypes.c_size_t(len(tokens)),
+            ctypes.c_size_t(int(vocab_start)),
+            ctypes.c_size_t(int(vocab_end)),
+            ctypes.byref(out_idx),
+            ctypes.byref(out_val),
+        )
+        return int(out_idx.value), float(out_val.value)
