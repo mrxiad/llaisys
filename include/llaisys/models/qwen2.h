@@ -31,12 +31,38 @@ __C {
 
     struct LlaisysQwen2Model;
 
-    __export struct LlaisysQwen2Model *llaisysQwen2ModelCreate(const LlaisysQwen2Meta *meta, llaisysDeviceType_t device, int *device_ids, int ndevice);
+    // Create model instance.
+    // device_ids / ndevice are kept for forward compatibility.
+    __export struct LlaisysQwen2Model *llaisysQwen2ModelCreate(
+        const LlaisysQwen2Meta *meta,
+        llaisysDeviceType_t device,
+        int *device_ids,
+        int ndevice);
 
-    __export void llaisysQwen2ModelDestroy(struct LlaisysQwen2Model * model);
+    __export void llaisysQwen2ModelDestroy(struct LlaisysQwen2Model *model);
 
-    __export struct LlaisysQwen2Weights *llaisysQwen2ModelWeights(struct LlaisysQwen2Model * model);
+    // Optional helper for legacy code paths.
+    __export struct LlaisysQwen2Weights *llaisysQwen2ModelWeights(
+        struct LlaisysQwen2Model *model);
 
-    __export int64_t llaisysQwen2ModelInfer(struct LlaisysQwen2Model * model, int64_t * token_ids, size_t ntoken);
+    // Load one named weight tensor from host memory.
+    // Returns 1 when the tensor name is recognized and loaded, 0 otherwise.
+    __export int llaisysQwen2ModelLoadTensor(
+        struct LlaisysQwen2Model *model,
+        const char *name,
+        const void *data,
+        size_t *shape,
+        size_t ndim,
+        llaisysDataType_t dtype);
+
+    // Reset generation state (KV cache + cached prefix tracking).
+    __export void llaisysQwen2ModelReset(struct LlaisysQwen2Model *model);
+
+    // Infer next token id using current token_ids as full context.
+    // The implementation performs greedy argmax decoding.
+    __export int64_t llaisysQwen2ModelInfer(
+        struct LlaisysQwen2Model *model,
+        int64_t *token_ids,
+        size_t ntoken);
 }
 #endif // LLAISYS_MODELS_QWEN2_H
