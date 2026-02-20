@@ -28,7 +28,7 @@ def vocab_shard(vocab_size: int, rank: int, world_size: int) -> ShardRange:
 
 
 def distributed_argmax_step(
-    model: llaisys.models.Qwen2,
+    model,
     tokens: List[int],
     shard: ShardRange,
     comm: MPI.Comm,
@@ -56,7 +56,7 @@ def run_distributed_infer(
     comm: MPI.Comm,
 ) -> None:
     tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
-    model = llaisys.models.Qwen2(model_path, device=llaisys.DeviceType.CPU)
+    model = llaisys.models.load_model(model_path, device=llaisys.DeviceType.CPU)
     shard = vocab_shard(model._meta.voc, rank, world_size)  # noqa: SLF001
 
     if rank == 0:

@@ -110,7 +110,7 @@ class MultiUserScheduler:
     def __init__(self, model_path: str, device_name: str, batch_size: int = 4, prefix_cache_cap: int = 50000) -> None:
         device = llaisys.DeviceType.CPU if device_name == "cpu" else llaisys.DeviceType.NVIDIA
         self._tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
-        self._model = llaisys.models.Qwen2(model_path, device=device)
+        self._model = llaisys.models.load_model(model_path, device=device)
         self._end_token = self._model._end_token  # noqa: SLF001
 
         self._batch_size = max(1, int(batch_size))

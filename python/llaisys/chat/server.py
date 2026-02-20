@@ -63,7 +63,7 @@ class ChatService:
     def __init__(self, model_path: str, device_name: str) -> None:
         device = llaisys.DeviceType.CPU if device_name == "cpu" else llaisys.DeviceType.NVIDIA
         self._tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
-        self._model = llaisys.models.Qwen2(model_path, device=device)
+        self._model = llaisys.models.load_model(model_path, device=device)
         self._lock = threading.Lock()
 
     def _build_prompt_tokens(self, messages: List[Dict[str, str]]) -> List[int]:
